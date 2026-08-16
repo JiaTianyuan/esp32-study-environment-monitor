@@ -15,6 +15,7 @@ const int SCL_PIN = 9;
 const int GREEN_LED_PIN = 4;
 const int YELLOW_LED_PIN = 5;
 const int RED_LED_PIN = 6;
+const int BUZZER_PIN = 7;
 
 const int SCREEN_WIDTH = 128;
 const int SCREEN_HEIGHT = 64;
@@ -34,6 +35,8 @@ const float HUMIDITY_POOR_HIGH = 80.0F;
 const float LIGHT_WARNING_MIN = 300.0F;
 const float LIGHT_POOR_MIN = 50.0F;
 
+const unsigned long BUZZER_DURATION_MS = 200;
+
 Adafruit_SSD1306 display(
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
@@ -50,6 +53,8 @@ enum class EnvironmentStatus
   WARNING,
   POOR
 };
+
+EnvironmentStatus previousStatus = EnvironmentStatus::WARNING;
 
 EnvironmentStatus evaluateEnvironment(
     float temperature,
@@ -127,6 +132,21 @@ void updateStatusLeds(EnvironmentStatus status)
   }
 }
 
+void updateBuzzer(EnvironmentStatus status)
+{
+  if (status == EnvironmentStatus::POOR &&
+      previousStatus != EnvironmentStatus::POOR)
+  {
+    Serial.println("Alert: environment entered POOR state.");
+
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(BUZZER_DURATION_MS);
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+
+  previousStatus = status;
+}
+
 void setup()
 {
   Serial.begin(115200);
@@ -137,10 +157,12 @@ void setup()
   pinMode(GREEN_LED_PIN, OUTPUT);
   pinMode(YELLOW_LED_PIN, OUTPUT);
   pinMode(RED_LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
 
   digitalWrite(GREEN_LED_PIN, LOW);
   digitalWrite(YELLOW_LED_PIN, LOW);
   digitalWrite(RED_LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
 
   Wire.begin(SDA_PIN, SCL_PIN);
 
@@ -235,6 +257,7 @@ void loop()
       evaluateEnvironment(temperature, humidity, lux);
 
   updateStatusLeds(status);
+  updateBuzzer(status);
 
   Serial.print("Status: ");
   Serial.println(statusToString(status));
@@ -251,6 +274,7 @@ void loop()
 
     display.setCursor(0, 14);
     display.print("Temp: ");
+
     if (bmeReady)
     {
       display.print(temperature, 1);
@@ -263,6 +287,7 @@ void loop()
 
     display.setCursor(0, 26);
     display.print("Hum : ");
+
     if (bmeReady)
     {
       display.print(humidity, 1);
@@ -275,6 +300,7 @@ void loop()
 
     display.setCursor(0, 38);
     display.print("Light: ");
+
     if (bh1750Ready)
     {
       display.print(lux, 1);
@@ -287,6 +313,7 @@ void loop()
 
     display.setCursor(0, 50);
     display.print("Pres: ");
+
     if (bmeReady)
     {
       display.print(pressure, 1);
