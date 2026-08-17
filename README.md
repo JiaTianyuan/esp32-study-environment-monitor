@@ -2,7 +2,7 @@
 
 An ESP32-S3 embedded system that monitors **temperature, humidity, atmospheric pressure, and ambient light**, then converts sensor data into an immediate **GOOD / WARNING / POOR** study-environment status.
 
-The system combines multiple I²C sensors, an OLED dashboard, three status LEDs, and a transition-based buzzer alert into one working physical prototype.
+The system combines multiple I²C sensors, an OLED dashboard, three status LEDs, state-aware hysteresis, and a transition-based buzzer alert into one working physical prototype.
 
 ![Working ESP32 Study Environment Monitor](docs/images/hardware-warning-state.jpg)
 
@@ -25,6 +25,8 @@ The ESP32 continuously reads the environment, classifies the current conditions,
 | Firmware | Arduino C++ |
 | Build system | PlatformIO |
 | Communication | Shared I²C bus + Serial |
+| Runtime timing | Non-blocking `millis()` scheduling |
+| Status stability | State-aware hysteresis |
 
 ## System Architecture
 
@@ -32,11 +34,11 @@ The ESP32 continuously reads the environment, classifies the current conditions,
         BME280
   Temp / Hum / Pressure
             |
-            |
+            | I2C
             v
          ESP32-S3
             ^
-            |
+            | I2C
             |
          BH1750
        Ambient Light
@@ -44,7 +46,8 @@ The ESP32 continuously reads the environment, classifies the current conditions,
             |
             v
 
-   evaluateEnvironment()
+   Environment Evaluation
+      + Hysteresis
 
             |
      +------+------+
@@ -76,19 +79,39 @@ The firmware also attempts `0x77` as a fallback BME280 address.
 
 ## Environment Classification
 
-The current firmware uses configurable prototype thresholds.
+The firmware uses configurable prototype thresholds with **state-aware hysteresis**.
 
 These thresholds were selected for system development and repeatable hardware testing. They are **engineering heuristics**, not medical or occupational-health standards.
 
-| Status | Current Logic |
-|---|---|
-| **GOOD** | Temperature 18–30 °C, humidity 30–70%, light ≥ 300 lx |
-| **WARNING** | Valid measurements outside the GOOD range but not severe enough for POOR |
-| **POOR** | Temperature < 15 °C or > 32 °C, humidity < 20% or > 80%, or light < 50 lx |
+### GOOD State
+
+To enter `GOOD`, all three actionable measurements must satisfy the stricter entry range:
+
+| Measurement | Enter GOOD | Remain GOOD |
+|---|---:|---:|
+| Temperature | 19–29 °C | 18–30 °C |
+| Humidity | 35–65% | 30–70% |
+| Ambient light | ≥ 330 lx | ≥ 300 lx |
+
+This prevents small measurement fluctuations near the GOOD boundary from repeatedly switching the system between `GOOD` and `WARNING`.
+
+### POOR State
+
+The system enters `POOR` when any measurement crosses a severe-condition threshold:
+
+| Measurement | Enter POOR | Recover from POOR |
+|---|---:|---:|
+| Temperature | < 15 °C or > 32 °C | 16–31 °C |
+| Humidity | < 20% or > 80% | 25–75% |
+| Ambient light | < 50 lx | ≥ 70 lx |
+
+Once the system enters `POOR`, all required measurements must return to their recovery ranges before the system can leave the POOR state.
+
+Conditions that are neither GOOD nor POOR are classified as `WARNING`.
 
 Pressure is measured and displayed but is not currently used in the study-status classification because it provides less immediately actionable indoor feedback than temperature, humidity, and lighting.
 
-If a required environmental sensor is unavailable, the system falls back to `WARNING` instead of reporting a false `GOOD` state.
+If a required environmental sensor is unavailable during initialization, the system falls back to `WARNING` instead of reporting a false `GOOD` state.
 
 ## Physical Outputs
 
@@ -102,13 +125,13 @@ POOR    -> Red LED
 
 The buzzer uses **state-transition-based alerting**.
 
-When the environment changes from GOOD or WARNING into POOR, the buzzer produces one short approximately 200 ms alert.
+When the environment transitions into POOR, the buzzer produces one short approximately 200 ms alert.
 
 It does not continuously sound while the environment remains POOR.
 
 Once conditions recover and the system later enters POOR again, the alert is re-armed and triggers once again.
 
-This behavior avoids repetitive nuisance alarms while still providing immediate feedback when conditions deteriorate.
+The buzzer timing is handled without a blocking 200 ms delay.
 
 ## ESP32 Pin Map
 
@@ -129,14 +152,19 @@ The system has been tested on the physical breadboard rather than only compiled 
 
 | Test | Verified Result |
 |---|---|
-| Normal room lighting (~120 lx during captured test) | `WARNING`, yellow LED |
+| Normal room lighting (~120–170 lx in captured tests) | `WARNING`, yellow LED |
 | BH1750 completely covered | `POOR`, red LED |
 | Enter POOR state | Buzzer sounds once |
 | Remain in POOR state | Red LED remains on; buzzer stays silent |
-| Recover to WARNING and enter POOR again | Buzzer sounds once again |
-| Bright phone flashlight illumination | `GOOD`, green LED when temperature and humidity remain inside GOOD ranges |
+| Recover and later enter POOR again | Buzzer re-arms and sounds once again |
+| POOR with light between 50–70 lx | Remains `POOR` |
+| POOR with light raised above 70 lx | Recovers to `WARNING` |
+| Light raised to ≥ 330 lx with other values valid | Enters `GOOD`, green LED |
+| GOOD with light between 300–330 lx | Remains `GOOD` |
+| GOOD with light reduced below 300 lx | Returns to `WARNING` |
 | OLED output | Live temperature, humidity, light, pressure, and status displayed |
 | Shared I²C bus | BME280, BH1750, and OLED detected and operating together |
+| Non-blocking firmware | Sensor updates and buzzer timing verified on hardware |
 
 The prototype shown above captured approximately:
 
@@ -148,18 +176,37 @@ Light:       120.8 lx
 Pressure:    991.8 hPa
 ```
 
+Additional hysteresis testing was performed by gradually changing the light reaching the BH1750 and observing state transitions around the configured boundaries.
+
 ## Firmware Design
 
-The firmware separates several responsibilities into dedicated functions:
+The firmware separates major responsibilities into dedicated functions:
 
 | Function | Responsibility |
 |---|---|
-| `evaluateEnvironment()` | Converts sensor measurements into GOOD / WARNING / POOR |
+| `shouldEnterPoor()` | Detects severe conditions that require POOR |
+| `hasRecoveredFromPoor()` | Determines whether POOR recovery margins are satisfied |
+| `shouldEnterGood()` | Applies the stricter GOOD entry thresholds |
+| `shouldRemainGood()` | Applies the wider GOOD hold thresholds |
+| `evaluateEnvironment()` | Produces the state-aware GOOD / WARNING / POOR result |
 | `updateStatusLeds()` | Updates the green, yellow, and red LEDs |
-| `updateBuzzer()` | Detects transitions into POOR and generates the one-shot alert |
-| `statusToString()` | Provides a common text representation for Serial and OLED output |
+| `updateBuzzer()` | Handles transition-based, non-blocking audible alerts |
+| `statusToString()` | Provides a common status representation for Serial and OLED output |
 
-This separation makes the firmware easier to test, explain, and extend than placing all logic directly inside `loop()`.
+This separation keeps sensor evaluation, physical outputs, and alert behavior easier to understand and modify than placing all logic directly inside `loop()`.
+
+## Non-Blocking Runtime Design
+
+Sensor updates are scheduled using `millis()` rather than a blocking `delay(2000)` in the main loop.
+
+```text
+Sensor update interval -> 2000 ms
+Buzzer pulse duration  -> 200 ms
+```
+
+The buzzer also uses a timestamp and active-state flag instead of pausing the processor for the duration of the alert.
+
+This allows the main loop to remain responsive while timed behavior is active.
 
 ## Engineering Decisions
 
@@ -169,15 +216,21 @@ The BME280, BH1750, and SSD1306 OLED share one SDA/SCL pair.
 
 This reduces GPIO usage and demonstrates integration of multiple independent devices on the same communication bus.
 
+### State-Aware Hysteresis
+
+A sensor reading close to a classification threshold can fluctuate slightly from one measurement to the next.
+
+Using separate entry, hold, and recovery boundaries prevents minor measurement changes from causing rapid GOOD/WARNING/POOR state switching.
+
 ### Transition-Based Alerting
 
 A continuous alarm would create unnecessary noise whenever a POOR condition persisted.
 
-The firmware therefore stores the previous environment state and triggers the buzzer only when the system transitions into POOR.
+The firmware therefore stores state across loop iterations and triggers the buzzer only when the environment transitions into POOR.
 
-### Fail-Safe Classification
+### Fail-Safe Initialization
 
-If required environmental sensor data is unavailable, the firmware does not classify the environment as GOOD.
+If a required environmental sensor is unavailable during initialization, the firmware does not classify the environment as GOOD.
 
 ### Actionable Measurements
 
@@ -195,6 +248,8 @@ pio run -t upload
 pio device monitor -b 115200
 ```
 
+The same operations can also be performed through the PlatformIO controls in VS Code.
+
 Dependencies are defined in `platformio.ini`:
 
 ```text
@@ -211,42 +266,37 @@ Selected hardware evidence is stored under:
 docs/images/
 ```
 
-The public repository intentionally contains selected, useful engineering evidence rather than every intermediate development screenshot.
+The public repository contains selected engineering evidence rather than every intermediate development screenshot.
 
-Additional raw build photos, debugging evidence, and development history are maintained separately for project documentation and interview preparation.
+## Development Note
 
-## AI-Assisted Development
+AI-assisted tools were used during development for debugging support, code review, and iteration.
 
-AI-assisted tools were used during development for tasks such as debugging support, code review, and iteration.
-
-Physical assembly, wiring changes, sensor integration, hardware testing, observed-result verification, and engineering acceptance decisions were performed and validated on the real prototype.
-
-The goal was to use AI as an engineering productivity tool while maintaining understanding of the system behavior and validating generated suggestions against physical hardware.
+Hardware integration, wiring, and reported test results were validated on the physical prototype.
 
 ## Current Status
 
-The main hardware feature set is operational:
+The main hardware and firmware feature set is operational:
 
 ```text
-BME280 sensing        PASS
-BH1750 sensing        PASS
-Shared I2C bus        PASS
-OLED dashboard        PASS
-Three-state LEDs      PASS
-Transition alert      PASS
-Physical validation   PASS
+BME280 sensing           PASS
+BH1750 sensing           PASS
+Shared I2C bus           PASS
+OLED dashboard           PASS
+Three-state LEDs         PASS
+Transition alert         PASS
+Non-blocking timing      PASS
+Status hysteresis        PASS
+Physical validation      PASS
 ```
-
-The remaining work focuses primarily on firmware robustness, repeatable testing, and recruiter-facing project polish.
 
 ## Planned Improvements
 
 | Improvement | Purpose |
 |---|---|
-| Non-blocking timing with `millis()` | Avoid unnecessary blocking delays |
-| Status hysteresis | Prevent rapid state changes near thresholds |
-| Stronger sensor fault handling | Improve robustness |
-| Repeatable validation cases | Produce clearer engineering evidence |
+| Runtime sensor-value validation | Detect invalid or failed readings after startup |
+| Stronger sensor fault handling | Improve degraded-mode behavior |
+| Repeatable validation document | Preserve structured engineering test evidence |
 | Wiring / system documentation | Improve reproducibility |
 | Final project photos | Improve presentation quality |
-| Recruiter demo material | Make the project easier to evaluate quickly |
+| Short hardware demo | Show system behavior quickly |
