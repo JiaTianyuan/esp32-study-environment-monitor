@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include <math.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
 #include <BH1750.h>
@@ -47,6 +48,14 @@ const float LIGHT_GOOD_HOLD_MIN = 300.0F;
 
 const float LIGHT_POOR_ENTER_MIN = 50.0F;
 const float LIGHT_POOR_RECOVER_MIN = 70.0F;
+
+const float TEMP_SENSOR_MIN = -40.0F;
+const float TEMP_SENSOR_MAX = 85.0F;
+const float HUMIDITY_SENSOR_MIN = 0.0F;
+const float HUMIDITY_SENSOR_MAX = 100.0F;
+const float PRESSURE_SENSOR_MIN_HPA = 300.0F;
+const float PRESSURE_SENSOR_MAX_HPA = 1100.0F;
+const float LIGHT_SENSOR_MIN_LUX = 0.0F;
 
 const unsigned long SENSOR_UPDATE_INTERVAL_MS = 2000;
 const unsigned long BUZZER_DURATION_MS = 200;
@@ -189,6 +198,47 @@ const char *statusToString(EnvironmentStatus status)
   return "UNKNOWN";
 }
 
+bool isTemperatureValid(float temperature)
+{
+  return isfinite(temperature) &&
+         temperature >= TEMP_SENSOR_MIN &&
+         temperature <= TEMP_SENSOR_MAX;
+}
+
+bool isHumidityValid(float humidity)
+{
+  return isfinite(humidity) &&
+         humidity >= HUMIDITY_SENSOR_MIN &&
+         humidity <= HUMIDITY_SENSOR_MAX;
+}
+
+bool isPressureValid(float pressure)
+{
+  return isfinite(pressure) &&
+         pressure >= PRESSURE_SENSOR_MIN_HPA &&
+         pressure <= PRESSURE_SENSOR_MAX_HPA;
+}
+
+bool isLightValid(float lux)
+{
+  return isfinite(lux) &&
+         lux >= LIGHT_SENSOR_MIN_LUX;
+}
+
+bool areSensorReadingsValid(
+    float temperature,
+    float humidity,
+    float pressure,
+    float lux)
+{
+  return bmeReady &&
+         bh1750Ready &&
+         isTemperatureValid(temperature) &&
+         isHumidityValid(humidity) &&
+         isPressureValid(pressure) &&
+         isLightValid(lux);
+}
+
 void updateStatusLeds(EnvironmentStatus status)
 {
   digitalWrite(GREEN_LED_PIN, LOW);
@@ -324,10 +374,10 @@ void loop()
 
   lastSensorUpdateMs = currentMillis;
 
-  float temperature = 0.0F;
-  float humidity = 0.0F;
-  float pressure = 0.0F;
-  float lux = 0.0F;
+  float temperature = NAN;
+  float humidity = NAN;
+  float pressure = NAN;
+  float lux = NAN;
 
   if (bmeReady)
   {
@@ -365,12 +415,31 @@ void loop()
     Serial.println("BH1750 unavailable.");
   }
 
-  currentStatus =
-      evaluateEnvironment(
+  bool sensorDataValid =
+      areSensorReadingsValid(
           temperature,
           humidity,
-          lux,
-          currentStatus);
+          pressure,
+          lux);
+
+  if (sensorDataValid)
+  {
+    Serial.println("Sensor validation: PASS");
+
+    currentStatus =
+        evaluateEnvironment(
+            temperature,
+            humidity,
+            lux,
+            currentStatus);
+  }
+  else
+  {
+    Serial.println("Sensor validation: FAILED");
+    Serial.println("Fail-safe: forcing WARNING state.");
+
+    currentStatus = EnvironmentStatus::WARNING;
+  }
 
   updateStatusLeds(currentStatus);
 
@@ -379,7 +448,15 @@ void loop()
       millis());
 
   Serial.print("Status: ");
-  Serial.println(statusToString(currentStatus));
+
+  if (sensorDataValid)
+  {
+    Serial.println(statusToString(currentStatus));
+  }
+  else
+  {
+    Serial.println("WARNING (SENSOR ERROR)");
+  }
 
   if (oledReady)
   {
@@ -389,12 +466,21 @@ void loop()
 
     display.setCursor(0, 0);
     display.print("STATUS: ");
-    display.println(statusToString(currentStatus));
+
+    if (sensorDataValid)
+    {
+      display.println(statusToString(currentStatus));
+    }
+    else
+    {
+      display.println("SENSOR ERROR");
+    }
 
     display.setCursor(0, 14);
     display.print("Temp: ");
 
-    if (bmeReady)
+    if (bmeReady &&
+        isTemperatureValid(temperature))
     {
       display.print(temperature, 1);
       display.println(" C");
@@ -407,7 +493,8 @@ void loop()
     display.setCursor(0, 26);
     display.print("Hum : ");
 
-    if (bmeReady)
+    if (bmeReady &&
+        isHumidityValid(humidity))
     {
       display.print(humidity, 1);
       display.println(" %");
@@ -420,7 +507,8 @@ void loop()
     display.setCursor(0, 38);
     display.print("Light: ");
 
-    if (bh1750Ready)
+    if (bh1750Ready &&
+        isLightValid(lux))
     {
       display.print(lux, 1);
       display.println(" lx");
@@ -433,7 +521,8 @@ void loop()
     display.setCursor(0, 50);
     display.print("Pres: ");
 
-    if (bmeReady)
+    if (bmeReady &&
+        isPressureValid(pressure))
     {
       display.print(pressure, 1);
       display.println(" hPa");
