@@ -22,18 +22,31 @@ const int SCREEN_HEIGHT = 64;
 const int OLED_RESET = -1;
 const int OLED_ADDRESS = 0x3C;
 
-const float TEMP_WARNING_LOW = 18.0F;
-const float TEMP_WARNING_HIGH = 30.0F;
-const float TEMP_POOR_LOW = 15.0F;
-const float TEMP_POOR_HIGH = 32.0F;
+const float TEMP_GOOD_ENTER_LOW = 19.0F;
+const float TEMP_GOOD_ENTER_HIGH = 29.0F;
+const float TEMP_GOOD_HOLD_LOW = 18.0F;
+const float TEMP_GOOD_HOLD_HIGH = 30.0F;
 
-const float HUMIDITY_WARNING_LOW = 30.0F;
-const float HUMIDITY_WARNING_HIGH = 70.0F;
-const float HUMIDITY_POOR_LOW = 20.0F;
-const float HUMIDITY_POOR_HIGH = 80.0F;
+const float TEMP_POOR_ENTER_LOW = 15.0F;
+const float TEMP_POOR_ENTER_HIGH = 32.0F;
+const float TEMP_POOR_RECOVER_LOW = 16.0F;
+const float TEMP_POOR_RECOVER_HIGH = 31.0F;
 
-const float LIGHT_WARNING_MIN = 300.0F;
-const float LIGHT_POOR_MIN = 50.0F;
+const float HUMIDITY_GOOD_ENTER_LOW = 35.0F;
+const float HUMIDITY_GOOD_ENTER_HIGH = 65.0F;
+const float HUMIDITY_GOOD_HOLD_LOW = 30.0F;
+const float HUMIDITY_GOOD_HOLD_HIGH = 70.0F;
+
+const float HUMIDITY_POOR_ENTER_LOW = 20.0F;
+const float HUMIDITY_POOR_ENTER_HIGH = 80.0F;
+const float HUMIDITY_POOR_RECOVER_LOW = 25.0F;
+const float HUMIDITY_POOR_RECOVER_HIGH = 75.0F;
+
+const float LIGHT_GOOD_ENTER_MIN = 330.0F;
+const float LIGHT_GOOD_HOLD_MIN = 300.0F;
+
+const float LIGHT_POOR_ENTER_MIN = 50.0F;
+const float LIGHT_POOR_RECOVER_MIN = 70.0F;
 
 const unsigned long SENSOR_UPDATE_INTERVAL_MS = 2000;
 const unsigned long BUZZER_DURATION_MS = 200;
@@ -63,41 +76,100 @@ enum class EnvironmentStatus
 EnvironmentStatus currentStatus = EnvironmentStatus::WARNING;
 EnvironmentStatus previousStatus = EnvironmentStatus::WARNING;
 
-EnvironmentStatus evaluateEnvironment(
+bool shouldEnterPoor(
     float temperature,
     float humidity,
     float lux)
+{
+  return temperature < TEMP_POOR_ENTER_LOW ||
+         temperature > TEMP_POOR_ENTER_HIGH ||
+         humidity < HUMIDITY_POOR_ENTER_LOW ||
+         humidity > HUMIDITY_POOR_ENTER_HIGH ||
+         lux < LIGHT_POOR_ENTER_MIN;
+}
+
+bool hasRecoveredFromPoor(
+    float temperature,
+    float humidity,
+    float lux)
+{
+  return temperature >= TEMP_POOR_RECOVER_LOW &&
+         temperature <= TEMP_POOR_RECOVER_HIGH &&
+         humidity >= HUMIDITY_POOR_RECOVER_LOW &&
+         humidity <= HUMIDITY_POOR_RECOVER_HIGH &&
+         lux >= LIGHT_POOR_RECOVER_MIN;
+}
+
+bool shouldEnterGood(
+    float temperature,
+    float humidity,
+    float lux)
+{
+  return temperature >= TEMP_GOOD_ENTER_LOW &&
+         temperature <= TEMP_GOOD_ENTER_HIGH &&
+         humidity >= HUMIDITY_GOOD_ENTER_LOW &&
+         humidity <= HUMIDITY_GOOD_ENTER_HIGH &&
+         lux >= LIGHT_GOOD_ENTER_MIN;
+}
+
+bool shouldRemainGood(
+    float temperature,
+    float humidity,
+    float lux)
+{
+  return temperature >= TEMP_GOOD_HOLD_LOW &&
+         temperature <= TEMP_GOOD_HOLD_HIGH &&
+         humidity >= HUMIDITY_GOOD_HOLD_LOW &&
+         humidity <= HUMIDITY_GOOD_HOLD_HIGH &&
+         lux >= LIGHT_GOOD_HOLD_MIN;
+}
+
+EnvironmentStatus evaluateEnvironment(
+    float temperature,
+    float humidity,
+    float lux,
+    EnvironmentStatus previousEnvironmentStatus)
 {
   if (!bmeReady || !bh1750Ready)
   {
     return EnvironmentStatus::WARNING;
   }
 
-  bool poor =
-      temperature < TEMP_POOR_LOW ||
-      temperature > TEMP_POOR_HIGH ||
-      humidity < HUMIDITY_POOR_LOW ||
-      humidity > HUMIDITY_POOR_HIGH ||
-      lux < LIGHT_POOR_MIN;
-
-  if (poor)
+  if (previousEnvironmentStatus == EnvironmentStatus::POOR &&
+      !hasRecoveredFromPoor(
+          temperature,
+          humidity,
+          lux))
   {
     return EnvironmentStatus::POOR;
   }
 
-  bool warning =
-      temperature < TEMP_WARNING_LOW ||
-      temperature > TEMP_WARNING_HIGH ||
-      humidity < HUMIDITY_WARNING_LOW ||
-      humidity > HUMIDITY_WARNING_HIGH ||
-      lux < LIGHT_WARNING_MIN;
-
-  if (warning)
+  if (shouldEnterPoor(
+          temperature,
+          humidity,
+          lux))
   {
-    return EnvironmentStatus::WARNING;
+    return EnvironmentStatus::POOR;
   }
 
-  return EnvironmentStatus::GOOD;
+  if (previousEnvironmentStatus == EnvironmentStatus::GOOD &&
+      shouldRemainGood(
+          temperature,
+          humidity,
+          lux))
+  {
+    return EnvironmentStatus::GOOD;
+  }
+
+  if (shouldEnterGood(
+          temperature,
+          humidity,
+          lux))
+  {
+    return EnvironmentStatus::GOOD;
+  }
+
+  return EnvironmentStatus::WARNING;
 }
 
 const char *statusToString(EnvironmentStatus status)
@@ -297,7 +369,8 @@ void loop()
       evaluateEnvironment(
           temperature,
           humidity,
-          lux);
+          lux,
+          currentStatus);
 
   updateStatusLeds(currentStatus);
 
