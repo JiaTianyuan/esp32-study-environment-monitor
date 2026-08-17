@@ -4,7 +4,7 @@ An ESP32-S3 embedded system that monitors **temperature, humidity, atmospheric p
 
 The system combines multiple I²C devices, an OLED dashboard, three status LEDs, state-aware hysteresis, non-blocking timing, runtime sensor validation, and transition-based audible alerts in one working physical prototype.
 
-![Working ESP32 Study Environment Monitor](docs/images/hardware-warning-state.jpg)
+![Working ESP32 Study Environment Monitor](docs/images/hardware-hero.jpg)
 
 **Project documentation:** [Hardware Validation](docs/TESTING.md) · [Hardware Wiring](docs/WIRING.md)
 
