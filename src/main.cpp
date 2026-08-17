@@ -35,6 +35,7 @@ const float HUMIDITY_POOR_HIGH = 80.0F;
 const float LIGHT_WARNING_MIN = 300.0F;
 const float LIGHT_POOR_MIN = 50.0F;
 
+const unsigned long SENSOR_UPDATE_INTERVAL_MS = 2000;
 const unsigned long BUZZER_DURATION_MS = 200;
 
 Adafruit_SSD1306 display(
@@ -47,6 +48,11 @@ bool bmeReady = false;
 bool bh1750Ready = false;
 bool oledReady = false;
 
+bool buzzerActive = false;
+
+unsigned long lastSensorUpdateMs = 0;
+unsigned long buzzerStartedAtMs = 0;
+
 enum class EnvironmentStatus
 {
   GOOD,
@@ -54,6 +60,7 @@ enum class EnvironmentStatus
   POOR
 };
 
+EnvironmentStatus currentStatus = EnvironmentStatus::WARNING;
 EnvironmentStatus previousStatus = EnvironmentStatus::WARNING;
 
 EnvironmentStatus evaluateEnvironment(
@@ -132,19 +139,30 @@ void updateStatusLeds(EnvironmentStatus status)
   }
 }
 
-void updateBuzzer(EnvironmentStatus status)
+void updateBuzzer(
+    EnvironmentStatus status,
+    unsigned long currentMillis)
 {
-  if (status == EnvironmentStatus::POOR &&
-      previousStatus != EnvironmentStatus::POOR)
+  if (buzzerActive &&
+      currentMillis - buzzerStartedAtMs >= BUZZER_DURATION_MS)
   {
-    Serial.println("Alert: environment entered POOR state.");
-
-    digitalWrite(BUZZER_PIN, HIGH);
-    delay(BUZZER_DURATION_MS);
     digitalWrite(BUZZER_PIN, LOW);
+    buzzerActive = false;
   }
 
-  previousStatus = status;
+  if (status != previousStatus)
+  {
+    if (status == EnvironmentStatus::POOR)
+    {
+      Serial.println("Alert: environment entered POOR state.");
+
+      digitalWrite(BUZZER_PIN, HIGH);
+      buzzerActive = true;
+      buzzerStartedAtMs = currentMillis;
+    }
+
+    previousStatus = status;
+  }
 }
 
 void setup()
@@ -181,7 +199,10 @@ void setup()
     Serial.println("BME280 not detected.");
   }
 
-  if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire))
+  if (lightMeter.begin(
+          BH1750::CONTINUOUS_HIGH_RES_MODE,
+          0x23,
+          &Wire))
   {
     bh1750Ready = true;
     Serial.println("BH1750 detected at address 0x23.");
@@ -191,7 +212,9 @@ void setup()
     Serial.println("BH1750 not detected.");
   }
 
-  if (display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS))
+  if (display.begin(
+          SSD1306_SWITCHCAPVCC,
+          OLED_ADDRESS))
   {
     oledReady = true;
     Serial.println("OLED detected at address 0x3C.");
@@ -208,10 +231,27 @@ void setup()
   {
     Serial.println("OLED initialization failed.");
   }
+
+  lastSensorUpdateMs =
+      millis() - SENSOR_UPDATE_INTERVAL_MS;
 }
 
 void loop()
 {
+  unsigned long currentMillis = millis();
+
+  updateBuzzer(
+      currentStatus,
+      currentMillis);
+
+  if (currentMillis - lastSensorUpdateMs <
+      SENSOR_UPDATE_INTERVAL_MS)
+  {
+    return;
+  }
+
+  lastSensorUpdateMs = currentMillis;
+
   float temperature = 0.0F;
   float humidity = 0.0F;
   float pressure = 0.0F;
@@ -253,14 +293,20 @@ void loop()
     Serial.println("BH1750 unavailable.");
   }
 
-  EnvironmentStatus status =
-      evaluateEnvironment(temperature, humidity, lux);
+  currentStatus =
+      evaluateEnvironment(
+          temperature,
+          humidity,
+          lux);
 
-  updateStatusLeds(status);
-  updateBuzzer(status);
+  updateStatusLeds(currentStatus);
+
+  updateBuzzer(
+      currentStatus,
+      millis());
 
   Serial.print("Status: ");
-  Serial.println(statusToString(status));
+  Serial.println(statusToString(currentStatus));
 
   if (oledReady)
   {
@@ -270,7 +316,7 @@ void loop()
 
     display.setCursor(0, 0);
     display.print("STATUS: ");
-    display.println(statusToString(status));
+    display.println(statusToString(currentStatus));
 
     display.setCursor(0, 14);
     display.print("Temp: ");
@@ -328,5 +374,4 @@ void loop()
   }
 
   Serial.println();
-  delay(2000);
 }
