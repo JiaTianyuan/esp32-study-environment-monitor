@@ -6,7 +6,7 @@ The system combines multiple I²C devices, an OLED dashboard, three status LEDs,
 
 ![Working ESP32 Study Environment Monitor](docs/images/hardware-hero.jpg)
 
-**Project documentation:** [Hardware Validation](docs/TESTING.md) · [Hardware Wiring](docs/WIRING.md)
+**Project links:** [Demo Video](docs/demo/esp32-study-environment-monitor-demo.mp4) · [Hardware Validation](docs/TESTING.md) · [Hardware Wiring](docs/WIRING.md)
 
 ## Project Overview
 
